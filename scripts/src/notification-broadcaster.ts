@@ -105,7 +105,13 @@ function optionalNumberEnv(name: string): number | undefined {
   return value;
 }
 
-function parseArguments(): LocationFilter | undefined {
+interface ParsedArguments {
+  location: LocationFilter;
+  messageOne?: string;
+  messageTwo?: string;
+}
+
+function parseArguments(): ParsedArguments | undefined {
   const args = new Map<string, string>();
   for (const argument of process.argv.slice(2)) {
     if (argument === "--") continue;
@@ -136,12 +142,16 @@ function parseArguments(): LocationFilter | undefined {
   const radiusKm = parseOptionalArgumentNumber(args, "radius-km");
 
   return {
-    scope,
-    country,
-    city,
-    latitude,
-    longitude,
-    radiusKm,
+    location: {
+      scope,
+      country,
+      city,
+      latitude,
+      longitude,
+      radiusKm,
+    },
+    messageOne: args.get("message-one"),
+    messageTwo: args.get("message-two"),
   };
 }
 
@@ -161,6 +171,8 @@ function printHelp(): void {
 Uso:
   pnpm --filter @workspace/scripts run notify -- --scope=city --city=Terrassa --country=ES
   pnpm --filter @workspace/scripts run notify -- --scope=country --country=ES
+  pnpm --filter @workspace/scripts run notify -- --scope=city --city=Terrassa --country=ES \\
+    --message-one="Primer mensaje" --message-two="Segundo mensaje"
 
 Argumentos:
   --scope=city|country     Alcance de búsqueda (por defecto: SEARCH_SCOPE).
@@ -169,14 +181,19 @@ Argumentos:
   --latitude=...            Coordenada opcional.
   --longitude=...           Coordenada opcional.
   --radius-km=...           Radio opcional.
+  --message-one="..."       Primer mensaje; sobrescribe MESSAGE_ONE.
+  --message-two="..."       Segundo mensaje; sobrescribe MESSAGE_TWO.
   --help                   Mostrar esta ayuda.
 `);
 }
 
-function loadConfig(): { api: ApiConfig; campaign: CampaignConfig } {
+function loadConfig(messages?: { messageOne?: string; messageTwo?: string }): {
+  api: ApiConfig;
+  campaign: CampaignConfig;
+} {
   const baseUrl = requiredEnv("MESSAGING_API_BASE_URL").replace(/\/+$/, "");
-  const firstMessage = process.env.MESSAGE_ONE?.trim() || DEFAULT_MESSAGES[0];
-  const secondMessage = process.env.MESSAGE_TWO?.trim() || DEFAULT_MESSAGES[1];
+  const firstMessage = messages?.messageOne?.trim() || process.env.MESSAGE_ONE?.trim() || DEFAULT_MESSAGES[0];
+  const secondMessage = messages?.messageTwo?.trim() || process.env.MESSAGE_TWO?.trim() || DEFAULT_MESSAGES[1];
 
   return {
     api: {
@@ -358,9 +375,10 @@ function eligibleUsers(users: User[], state: DeliveryStore): User[] {
 }
 
 async function run(): Promise<void> {
-  const location = parseArguments();
-  if (!location) throw new Error("No se ha indicado una ubicación.");
-  const { api, campaign } = loadConfig();
+  const parsedArguments = parseArguments();
+  if (!parsedArguments) throw new Error("No se ha indicado una ubicación.");
+  const { api, campaign } = loadConfig(parsedArguments);
+  const { location } = parsedArguments;
   const state = await loadState(campaign.stateFile);
   const client = new ApiClient(api);
 
