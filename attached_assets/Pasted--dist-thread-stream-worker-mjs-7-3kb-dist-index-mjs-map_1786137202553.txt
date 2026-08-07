@@ -1,0 +1,45 @@
+  dist/thread-stream-worker.mjs        7.3kb
+  dist/index.mjs.map                   2.1mb
+  dist/pino-worker.mjs.map           256.9kb
+  dist/pino-file.mjs.map             229.0kb
+  dist/pino-pretty.mjs.map           203.6kb
+  dist/thread-stream-worker.mjs.map   12.0kb
+⚡ Done in 193ms
+==> Uploading build...
+==> Uploaded in 2.5s. Compression took 1.4s
+==> Build successful 🎉
+==> Deploying...
+==> Setting WEB_CONCURRENCY=1 by default, based on available CPUs in the instance
+==> Running 'pnpm --filter @workspace/scripts run notify & pnpm --filter @workspace/api-server run start'
+> @workspace/api-server@0.0.0 start /opt/render/project/src/artifacts/api-server
+> node --enable-source-maps ./dist/index.mjs
+> @workspace/scripts@0.0.0 notify /opt/render/project/src/scripts
+> node --env-file-if-exists=.env --import tsx ./src/notification-broadcaster.ts
+.env not found. Continuing without it.
+{"level":30,"time":1786137058997,"pid":97,"hostname":"srv-d9r378pt0dsc73b8ri40-hibernate-5b789b6758-krgnj","port":10000,"msg":"Server listening"}
+Envío real activo solo para usuarios con consentimiento explícito.
+El proceso continuará hasta recibir Ctrl+C.
+Iniciando ciclo 1: Terrassa -> España -> Latinoamérica.
+Buscando usuarios activos con consentimiento en Terrassa, ES.
+{"level":30,"time":1786137059797,"pid":97,"hostname":"srv-d9r378pt0dsc73b8ri40-hibernate-5b789b6758-krgnj","req":{"id":1,"method":"HEAD","url":"/"},"res":{"statusCode":404},"responseTime":98,"msg":"request completed"}
+Error en Terrassa, ES: API respondió 400 Bad Request: {"type":"urn:gr:err:geo_hash_decode","title":"Invalid location format","status":400,"traceId":"6a7649e400000000297f763c02588dd6"}
+==> Your service is live 🎉
+{"level":30,"time":1786137064365,"pid":97,"hostname":"srv-d9r378pt0dsc73b8ri40-hibernate-5b789b6758-krgnj","req":{"id":2,"method":"GET","url":"/"},"res":{"statusCode":404},"responseTime":1,"msg":"request completed"}
+==> 
+==> ///////////////////////////////////////////////////////////
+==> 
+==> Available at your primary URL https://grndr.onrender.com
+==> 
+==> ///////////////////////////////////////////////////////////
+Buscando usuarios activos con consentimiento en país ES.
+Error en país ES: API respondió 400 Bad Request: {"type":"urn:gr:err:geo_hash_decode","title":"Invalid location format","status":400,"traceId":"6a7649ee00000000456297b86a86adb1"}
+Buscando usuarios activos con consentimiento en país MX.
+Error en país MX: API respondió 400 Bad Request: {"type":"urn:gr:err:geo_hash_decode","title":"Invalid location format","status":400,"traceId":"6a7649f8000000006e85eecc549c3580"}
+Buscando usuarios activos con consentimiento en país AR.
+Error en país AR: API respondió 400 Bad Request: {"type":"urn:gr:err:geo_hash_decode","title":"Invalid location format","status":400,"traceId":"6a764a02000000004a522b0e81a9dbad"}
+Buscando usuarios activos con consentimiento en país CO.
+Error en país CO: API respondió 400 Bad Request: {"type":"urn:gr:err:geo_hash_decode","title":"Invalid location format","status":400,"traceId":"6a764a0c000000005b11f907955820d4"}
+Buscando usuarios activos con consentimiento en país CL.
+Error en país CL: API respondió 400 Bad Request: {"type":"urn:gr:err:geo_hash_decode","title":"Invalid location format","status":400,"traceId":"6a764a16000000007ea08e6b23339031"}
+Buscando usuarios activos con consentimiento en país PE.
+Error en país PE: API respondió 400 Bad Request: {"type":"urn:gr:err:geo_hash_decode","title":"Invalid location format","status":400,"traceId":"6a764a20000000001a6d016298d60f87"}

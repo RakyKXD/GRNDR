@@ -86,7 +86,7 @@ interface LocationFilter {
   country: string;
   latitude?: number;
   longitude?: number;
-  radiusKm?: number;
+  geohash?: string;
 }
 
 interface User {
@@ -210,6 +210,17 @@ function grindrGeohash(latitude: number, longitude: number): string {
   return geohash;
 }
 
+function locationWithGeohash(location: LocationFilter): LocationFilter {
+  if (location.latitude === undefined || location.longitude === undefined) {
+    throw new Error(`No hay coordenadas fijas disponibles para ${locationLabel(location)}.`);
+  }
+
+  return {
+    ...location,
+    geohash: grindrGeohash(location.latitude, location.longitude),
+  };
+}
+
 function printHelp(): void {
   process.stdout.write(`
 Uso:
@@ -264,28 +275,28 @@ function loadConfig(): { api: ApiConfig; campaign: CampaignConfig } {
 }
 
 function buildLocationSequence(campaign: CampaignConfig, scope?: SearchScope): LocationFilter[] {
-  const terrassa: LocationFilter = {
+  const terrassa = locationWithGeohash({
     scope: "city",
     city: FIXED_TERRASSA.city,
     country: FIXED_TERRASSA.country,
     latitude: FIXED_TERRASSA.latitude,
     longitude: FIXED_TERRASSA.longitude,
-  };
+  });
   const spainCoordinates = DEFAULT_COUNTRY_CENTROIDS[FIXED_TERRASSA.country];
-  const spain: LocationFilter = {
+  const spain = locationWithGeohash({
     scope: "country",
     country: FIXED_TERRASSA.country,
     latitude: spainCoordinates.latitude,
     longitude: spainCoordinates.longitude,
-  };
+  });
   const latam = FIXED_LATAM_COUNTRIES.map((country): LocationFilter => {
     const coordinates = DEFAULT_COUNTRY_CENTROIDS[country];
-    return {
+    return locationWithGeohash({
       scope: "country",
       country,
       latitude: coordinates.latitude,
       longitude: coordinates.longitude,
-    };
+    });
   });
   const locations = [terrassa, spain, ...latam];
   return scope ? locations.filter((location) => location.scope === scope) : locations;
@@ -293,12 +304,14 @@ function buildLocationSequence(campaign: CampaignConfig, scope?: SearchScope): L
 
 function buildSearchUrl(api: ApiConfig, location: LocationFilter): URL {
   const url = new URL(api.searchPath, `${api.baseUrl}/`);
-  if (location.latitude === undefined || location.longitude === undefined) {
-    throw new Error(
-      `No hay coordenadas fijas disponibles para ${locationLabel(location)}.`,
-    );
+  if (
+    !location.geohash ||
+    location.geohash.length !== GRINDR_GEOHASH_PRECISION ||
+    !new RegExp(`^[${GEOHASH_ALPHABET}]{${GRINDR_GEOHASH_PRECISION}}$`).test(location.geohash)
+  ) {
+    throw new Error(`Geohash inválido para ${locationLabel(location)}.`);
   }
-  url.searchParams.set("geohash", grindrGeohash(location.latitude, location.longitude));
+  url.searchParams.set("geohash", location.geohash);
   return url;
 }
 
