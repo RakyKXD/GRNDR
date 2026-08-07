@@ -1,15 +1,22 @@
-# [Project name]
+# Consent Notification Broadcaster
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Script de notificaciones con consentimiento explícito para una API compatible que controles.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/api-server run dev` — ejecutar el API server en el `PORT` que inyecte el workflow
+- `pnpm --filter @workspace/scripts run notify -- --help` — mostrar las opciones del broadcaster
+- `pnpm --filter @workspace/scripts run notify -- --scope=city` — ejecutar solo la búsqueda de Terrassa
+- `pnpm --filter @workspace/scripts run notify -- --scope=country` — ejecutar las búsquedas de países configuradas
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `pnpm install --frozen-lockfile` — restaurar dependencias después de importar o clonar el proyecto
+- Required env for the API server: `DATABASE_URL` — Postgres connection string
+- Required env for the broadcaster: `MESSAGING_API_BASE_URL`, `MESSAGING_API_TOKEN`, `MESSAGE_ONE`, `MESSAGE_TWO`
+- El broadcaster usa `DRY_RUN=true` por defecto; no activar envíos reales hasta validar la API controlada.
+- Consulta `scripts/.env.example` para todas las variables de geolocalización, límites, pausas y archivos de auditoría.
 
 ## Stack
 
@@ -22,15 +29,23 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `scripts/src/notification-broadcaster.ts` — resolución de ubicaciones, generación de geohash, búsquedas, consentimiento, deduplicación y envíos.
+- `scripts/.env.example` — configuración documentada del broadcaster.
+- `artifacts/api-server/src/` — API Express; actualmente expone `/api/healthz`.
+- `lib/db/` — conexión y esquema de PostgreSQL con Drizzle.
+- `lib/api-spec/` — contrato OpenAPI fuente.
+- `lib/api-zod/` y `lib/api-client-react/` — tipos, validación y cliente generado.
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- En `SEARCH_LOCATION_MODE=geohash`, las búsquedas no envían `city` ni `country` al endpoint: convierten coordenadas a un geohash de 12 caracteres.
+- Terrassa puede usar `TERRASSA_LATITUDE` y `TERRASSA_LONGITUDE` directamente, o resolverse mediante `GEOCODING_URL`.
+- Las ubicaciones de país requieren una entrada en `LOCATION_COORDINATES` cuando se usa el modo geohash; si falta, se registra el error y el ciclo continúa.
+- Solo se procesan usuarios con consentimiento explícito y `DRY_RUN` evita envíos mientras se valida el flujo.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+El proyecto proporciona un broadcaster de campañas con dos mensajes secuenciales, pausas configurables, límite por ubicación, estado persistente para evitar duplicados y archivo de auditoría JSONL. Incluye un API server base para integrar endpoints adicionales.
 
 ## User preferences
 
@@ -38,7 +53,10 @@ _Describe the high-level user-facing capabilities of this app once they exist._
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- El proceso del broadcaster es continuo y solo termina con Ctrl+C.
+- `MESSAGING_API_BASE_URL` y `MESSAGING_API_TOKEN` deben apuntar a una API compatible que controles; no se deben inventar credenciales de terceros.
+- En geohash, `TERRASSA_LATITUDE` y `TERRASSA_LONGITUDE` deben configurarse juntas. Las coordenadas de países se declaran como `PAIS:LATITUD,LONGITUD;...`.
+- Los workflows de API y mockup pertenecen a sus artifacts; se reinician con sus nombres administrados, no creando workflows duplicados.
 
 ## Pointers
 

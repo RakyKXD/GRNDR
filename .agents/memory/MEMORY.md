@@ -1,0 +1,1 @@
+- [Imported workspace dependencies](imported-workspace-dependencies.md) — restore the locked pnpm dependency tree before starting artifact workflows after an import.
