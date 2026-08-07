@@ -18,6 +18,7 @@ import { dirname } from "node:path";
 import { resolve } from "node:path";
 
 type SearchScope = "city" | "country";
+type SearchLocationMode = "geohash" | "legacy";
 
 interface LocationFilter {
   scope: SearchScope;
@@ -50,6 +51,9 @@ interface ApiConfig {
   searchPath: string;
   messagePath: string;
   requestTimeoutMs: number;
+  locationMode: SearchLocationMode;
+  geocodingUrl?: string;
+  geocodingUserAgent: string;
 }
 
 interface CampaignConfig {
@@ -67,6 +71,7 @@ interface CampaignConfig {
   terrassaLatitude?: number;
   terrassaLongitude?: number;
   terrassaRadiusKm?: number;
+  locationCoordinates: Record<string, { latitude: number; longitude: number }>;
 }
 
 interface SearchResponse {
@@ -109,6 +114,92 @@ function optionalNumberEnv(name: string): number | undefined {
   return value;
 }
 
+function coordinateEnvPair(
+  latitudeName: string,
+  longitudeName: string,
+): { latitude?: number; longitude?: number } {
+  const latitude = optionalNumberEnv(latitudeName);
+  const longitude = optionalNumberEnv(longitudeName);
+  if ((latitude === undefined) !== (longitude === undefined)) {
+    throw new Error(`${latitudeName} y ${longitudeName} deben configurarse juntos.`);
+  }
+  return { latitude, longitude };
+}
+
+function validateCoordinates(latitude: number, longitude: number, label: string): void {
+  if (latitude < -90 || latitude > 90) {
+    throw new Error(`${label}: la latitud debe estar entre -90 y 90.`);
+  }
+  if (longitude < -180 || longitude > 180) {
+    throw new Error(`${label}: la longitud debe estar entre -180 y 180.`);
+  }
+}
+
+function parseLocationCoordinates(value: string): Record<string, { latitude: number; longitude: number }> {
+  const coordinates: Record<string, { latitude: number; longitude: number }> = {};
+  for (const item of value.split(";").map((part) => part.trim()).filter(Boolean)) {
+    const separator = item.indexOf(":");
+    if (separator <= 0) {
+      throw new Error(
+        "LOCATION_COORDINATES debe usar el formato PAIS:LATITUD,LONGITUD;PAIS:LATITUD,LONGITUD.",
+      );
+    }
+    const country = item.slice(0, separator).trim().toUpperCase();
+    const [latitudeText, longitudeText] = item.slice(separator + 1).split(",").map((part) => part.trim());
+    const latitude = Number(latitudeText);
+    const longitude = Number(longitudeText);
+    if (!country || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      throw new Error(`Coordenadas inválidas en LOCATION_COORDINATES: ${item}`);
+    }
+    validateCoordinates(latitude, longitude, `LOCATION_COORDINATES para ${country}`);
+    coordinates[country] = { latitude, longitude };
+  }
+  return coordinates;
+}
+
+function geohashEncode(latitude: number, longitude: number, precision = 12): string {
+  validateCoordinates(latitude, longitude, "Geohash");
+  const alphabet = "0123456789bcdefghjkmnpqrstuvwxyz";
+  let minLatitude = -90;
+  let maxLatitude = 90;
+  let minLongitude = -180;
+  let maxLongitude = 180;
+  let evenBit = true;
+  let bits = 0;
+  let bitCount = 0;
+  let geohash = "";
+
+  while (geohash.length < precision) {
+    const value = evenBit ? longitude : latitude;
+    const min = evenBit ? minLongitude : minLatitude;
+    const max = evenBit ? maxLongitude : maxLatitude;
+    bits = bits * 2 + (value >= (min + max) / 2 ? 1 : 0);
+    if (evenBit) {
+      if (value >= (minLongitude + maxLongitude) / 2) minLongitude = (minLongitude + maxLongitude) / 2;
+      else maxLongitude = (minLongitude + maxLongitude) / 2;
+    } else {
+      if (value >= (minLatitude + maxLatitude) / 2) minLatitude = (minLatitude + maxLatitude) / 2;
+      else maxLatitude = (minLatitude + maxLatitude) / 2;
+    }
+    evenBit = !evenBit;
+    bitCount += 1;
+    if (bitCount === 5) {
+      geohash += alphabet[bits];
+      bits = 0;
+      bitCount = 0;
+    }
+  }
+  return geohash;
+}
+
+function locationModeEnv(): SearchLocationMode {
+  const value = process.env.SEARCH_LOCATION_MODE?.trim().toLowerCase() || "geohash";
+  if (value !== "geohash" && value !== "legacy") {
+    throw new Error("SEARCH_LOCATION_MODE debe ser geohash o legacy.");
+  }
+  return value;
+}
+
 function printHelp(): void {
   process.stdout.write(`
 Uso:
@@ -122,6 +213,13 @@ El proceso ejecuta continuamente esta secuencia:
 
 Opciones:
   --help                   Mostrar esta ayuda.
+   --scope=city             Buscar solo la ubicación de ciudad configurada.
+   --scope=country          Buscar solo las ubicaciones de país configuradas.
+
+Ubicación:
+  SEARCH_LOCATION_MODE=geohash usa el formato de Grindr: geohash de 12 caracteres.
+  Para Terrassa configura TERRASSA_LATITUDE y TERRASSA_LONGITUDE, o GEOCODING_URL.
+  Para ubicaciones de país usa LOCATION_COORDINATES=ES:41.39,2.17;MX:19.43,-99.13.
 `);
 }
 
@@ -139,14 +237,21 @@ function loadConfig(): { api: ApiConfig; campaign: CampaignConfig } {
   const firstMessage = requiredEnv("MESSAGE_ONE");
   const secondMessage = requiredEnv("MESSAGE_TWO");
   const maxRecipientsPerRun = integerEnv("MAX_RECIPIENTS_PER_RUN", 25, 1);
+  const terrassaCoordinates = coordinateEnvPair("TERRASSA_LATITUDE", "TERRASSA_LONGITUDE");
+  const locationCoordinates = process.env.LOCATION_COORDINATES?.trim()
+    ? parseLocationCoordinates(process.env.LOCATION_COORDINATES)
+    : {};
 
   return {
     api: {
       baseUrl,
       token: requiredEnv("MESSAGING_API_TOKEN"),
-      searchPath: process.env.USER_SEARCH_PATH?.trim() || "/users/search",
+      searchPath: process.env.USER_SEARCH_PATH?.trim() || "/v4/discover",
       messagePath: process.env.SEND_MESSAGE_PATH?.trim() || "/messages",
       requestTimeoutMs: integerEnv("REQUEST_TIMEOUT_MS", 15_000, 1_000),
+      locationMode: locationModeEnv(),
+      geocodingUrl: process.env.GEOCODING_URL?.trim() || undefined,
+      geocodingUserAgent: process.env.GEOCODING_USER_AGENT?.trim() || "consent-notification-broadcaster/1.0",
     },
     campaign: {
       messages: [firstMessage, secondMessage],
@@ -167,14 +272,15 @@ function loadConfig(): { api: ApiConfig; campaign: CampaignConfig } {
         "LATAM_COUNTRIES",
         "MX,AR,CO,CL,PE,BR,UY,PY,BO,EC,VE,CR,PA,GT,SV,HN,NI,DO,CU,HT",
       ),
-      terrassaLatitude: optionalNumberEnv("TERRASSA_LATITUDE"),
-      terrassaLongitude: optionalNumberEnv("TERRASSA_LONGITUDE"),
+      terrassaLatitude: terrassaCoordinates.latitude,
+      terrassaLongitude: terrassaCoordinates.longitude,
       terrassaRadiusKm: optionalNumberEnv("TERRASSA_RADIUS_KM"),
+      locationCoordinates,
     },
   };
 }
 
-function buildLocationSequence(campaign: CampaignConfig): LocationFilter[] {
+function buildLocationSequence(campaign: CampaignConfig, scope?: SearchScope): LocationFilter[] {
   const terrassa: LocationFilter = {
     scope: "city",
     city: campaign.terrassaCity,
@@ -191,11 +297,87 @@ function buildLocationSequence(campaign: CampaignConfig): LocationFilter[] {
     scope: "country",
     country,
   }));
-  return [terrassa, spain, ...latam];
+  const locations = [terrassa, spain, ...latam];
+  return scope ? locations.filter((location) => location.scope === scope) : locations;
+}
+
+async function geocodeCity(
+  api: ApiConfig,
+  location: LocationFilter,
+): Promise<{ latitude: number; longitude: number }> {
+  if (location.latitude !== undefined && location.longitude !== undefined) {
+    return { latitude: location.latitude, longitude: location.longitude };
+  }
+  if (!api.geocodingUrl || !location.city) {
+    throw new Error(
+      `Faltan coordenadas para ${locationLabel(location)}. Configura TERRASSA_LATITUDE/TERRASSA_LONGITUDE o GEOCODING_URL.`,
+    );
+  }
+
+  const url = new URL(api.geocodingUrl);
+  url.searchParams.set("q", `${location.city}, ${location.country}`);
+  url.searchParams.set("format", "json");
+  url.searchParams.set("limit", "1");
+
+  const response = await fetch(url, {
+    headers: { Accept: "application/json", "User-Agent": api.geocodingUserAgent },
+  });
+  if (!response.ok) {
+    throw new Error(`El servicio de geocodificación respondió ${response.status} ${response.statusText}.`);
+  }
+  const payload: unknown = await response.json();
+  const candidate =
+    Array.isArray(payload) ? payload[0] :
+    payload && typeof payload === "object" && Array.isArray((payload as Record<string, unknown>).results)
+      ? ((payload as Record<string, unknown>).results as unknown[])[0]
+      : payload;
+  if (!candidate || typeof candidate !== "object") {
+    throw new Error(`No se encontraron coordenadas para ${locationLabel(location)}.`);
+  }
+
+  const values = candidate as Record<string, unknown>;
+  const latitude = Number(values.lat ?? values.latitude);
+  const longitude = Number(values.lon ?? values.lng ?? values.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    throw new Error(`La geocodificación no devolvió coordenadas válidas para ${locationLabel(location)}.`);
+  }
+  validateCoordinates(latitude, longitude, `Geocodificación de ${locationLabel(location)}`);
+  return { latitude, longitude };
+}
+
+async function resolveLocations(
+  api: ApiConfig,
+  campaign: CampaignConfig,
+  scope?: SearchScope,
+): Promise<LocationFilter[]> {
+  const locations = buildLocationSequence(campaign, scope);
+  if (api.locationMode !== "geohash") return locations;
+
+  return Promise.all(
+    locations.map(async (location) => {
+      if (location.scope === "city") {
+        const coordinates = await geocodeCity(api, location);
+        return { ...location, ...coordinates };
+      }
+      const coordinates = campaign.locationCoordinates[location.country];
+      if (!coordinates) return location;
+      return { ...location, ...coordinates };
+    }),
+  );
 }
 
 function buildSearchUrl(api: ApiConfig, location: LocationFilter): URL {
   const url = new URL(api.searchPath, `${api.baseUrl}/`);
+  if (api.locationMode === "geohash") {
+    if (location.latitude === undefined || location.longitude === undefined) {
+      throw new Error(
+        `Faltan coordenadas para ${locationLabel(location)}. Configura LOCATION_COORDINATES o usa --scope=city con TERRASSA_LATITUDE/TERRASSA_LONGITUDE.`,
+      );
+    }
+    url.searchParams.set("geohash", geohashEncode(location.latitude, location.longitude));
+    return url;
+  }
+
   url.searchParams.set("status", "active");
   url.searchParams.set("scope", location.scope);
   url.searchParams.set("country", location.country);
@@ -251,6 +433,10 @@ function parseSearchResponse(payload: unknown): SearchResponse {
 
 class ApiClient {
   public constructor(private readonly config: ApiConfig) {}
+
+  public get apiConfig(): ApiConfig {
+    return this.config;
+  }
 
   public async searchUsers(location: LocationFilter): Promise<User[]> {
     const users: User[] = [];
@@ -360,14 +546,17 @@ function locationLabel(location: LocationFilter): string {
     : `país ${location.country}`;
 }
 
-function validateArguments(): void {
+function validateArguments(): SearchScope | undefined {
   const argumentsList = process.argv.slice(2).filter((argument) => argument !== "--");
-  if (argumentsList.length === 0) return;
+  if (argumentsList.length === 0) return undefined;
   if (argumentsList.length === 1 && argumentsList[0] === "--help") {
     printHelp();
     process.exit(0);
   }
-  throw new Error("Este proceso continuo no acepta filtros por comando; usa las variables de entorno.");
+  if (argumentsList.length === 1 && ["--scope=city", "--scope=country"].includes(argumentsList[0])) {
+    return argumentsList[0].slice("--scope=".length) as SearchScope;
+  }
+  throw new Error("Argumento inválido. Usa --scope=city, --scope=country o --help.");
 }
 
 async function processLocation(
@@ -436,8 +625,9 @@ async function runCycle(
   campaign: CampaignConfig,
   state: DeliveryStore,
   cycleNumber: number,
+  scope?: SearchScope,
 ): Promise<void> {
-  const locations = buildLocationSequence(campaign);
+  const locations = await resolveLocations(client.apiConfig, campaign, scope);
   console.log(`Iniciando ciclo ${cycleNumber}: Terrassa -> España -> Latinoamérica.`);
   await audit(campaign.auditFile, {
     event: "cycle_started",
@@ -468,7 +658,7 @@ async function runCycle(
 }
 
 async function runForever(): Promise<void> {
-  validateArguments();
+  const scope = validateArguments();
   const { api, campaign } = loadConfig();
   const state = await loadState(campaign.stateFile);
   const client = new ApiClient(api);
@@ -482,7 +672,7 @@ async function runForever(): Promise<void> {
   console.log("El proceso continuará hasta recibir Ctrl+C.");
 
   while (true) {
-    await runCycle(client, campaign, state, cycleNumber);
+    await runCycle(client, campaign, state, cycleNumber, scope);
     cycleNumber += 1;
     console.log(`Esperando ${campaign.cyclePauseMs} ms antes del siguiente ciclo.`);
     await sleep(campaign.cyclePauseMs);
