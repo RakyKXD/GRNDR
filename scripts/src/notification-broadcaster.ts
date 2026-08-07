@@ -9,7 +9,8 @@
  * - DRY_RUN=true unless explicitly disabled.
  * - Only users with an explicit consent field are eligible.
  * - A persistent state file prevents duplicate messages across executions.
- * - MAX_RECIPIENTS_PER_RUN is required to be finite and positive.
+ * - MAX_RECIPIENTS_PER_LOCATION is finite and positive.
+ * - The process waits between locations and after every complete cycle.
  */
 
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -54,10 +55,18 @@ interface ApiConfig {
 interface CampaignConfig {
   messages: [string, string];
   pauseMs: number;
+  locationPauseMs: number;
+  cyclePauseMs: number;
   dryRun: boolean;
-  maxRecipients: number;
+  maxRecipientsPerLocation: number;
   stateFile: string;
   auditFile: string;
+  terrassaCity: string;
+  spainCountry: string;
+  latamCountries: string[];
+  terrassaLatitude?: number;
+  terrassaLongitude?: number;
+  terrassaRadiusKm?: number;
 }
 
 interface SearchResponse {
@@ -100,78 +109,36 @@ function optionalNumberEnv(name: string): number | undefined {
   return value;
 }
 
-function parseArguments(): LocationFilter | undefined {
-  const args = new Map<string, string>();
-  for (const argument of process.argv.slice(2)) {
-    if (argument === "--") continue;
-    if (argument === "--help") {
-      printHelp();
-      process.exit(0);
-    }
-    const match = /^--([^=]+)=(.*)$/.exec(argument);
-    if (!match) throw new Error(`Argumento no reconocido: ${argument}`);
-    args.set(match[1], match[2]);
-  }
-
-  const scope = (args.get("scope") ?? process.env.SEARCH_SCOPE ?? "city") as SearchScope;
-  if (scope !== "city" && scope !== "country") {
-    throw new Error("scope debe ser city o country.");
-  }
-
-  const country = args.get("country") ?? process.env.SEARCH_COUNTRY;
-  if (!country) throw new Error("Indica --country=... o SEARCH_COUNTRY.");
-
-  const city = args.get("city") ?? process.env.SEARCH_CITY;
-  if (scope === "city" && !city) {
-    throw new Error("El alcance city requiere --city=... o SEARCH_CITY.");
-  }
-
-  const latitude = parseOptionalArgumentNumber(args, "latitude");
-  const longitude = parseOptionalArgumentNumber(args, "longitude");
-  const radiusKm = parseOptionalArgumentNumber(args, "radius-km");
-
-  return {
-    scope,
-    country,
-    city,
-    latitude,
-    longitude,
-    radiusKm,
-  };
-}
-
-function parseOptionalArgumentNumber(
-  args: Map<string, string>,
-  name: string,
-): number | undefined {
-  const value = args.get(name);
-  if (value === undefined) return optionalNumberEnv(name.replaceAll("-", "_").toUpperCase());
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) throw new Error(`--${name} debe ser numérico.`);
-  return parsed;
-}
-
 function printHelp(): void {
   process.stdout.write(`
 Uso:
-  pnpm --filter @workspace/scripts run notify -- --scope=city --city=Terrassa --country=ES
-  pnpm --filter @workspace/scripts run notify -- --scope=country --country=ES
+  pnpm --filter @workspace/scripts run notify
 
-Argumentos:
-  --scope=city|country     Alcance de búsqueda (por defecto: SEARCH_SCOPE).
-  --city=...               Ciudad cuando el alcance es city.
-  --country=...            País requerido.
-  --latitude=...            Coordenada opcional.
-  --longitude=...           Coordenada opcional.
-  --radius-km=...           Radio opcional.
+El proceso ejecuta continuamente esta secuencia:
+  1. Terrassa, España.
+  2. Resto de España mediante la búsqueda por country=ES.
+  3. Cada país de LATAM_COUNTRIES, en orden.
+  4. Espera CYCLE_PAUSE_MS y vuelve al paso 1.
+
+Opciones:
   --help                   Mostrar esta ayuda.
 `);
+}
+
+function countryListEnv(name: string, fallback: string): string[] {
+  const countries = (process.env[name] ?? fallback)
+    .split(",")
+    .map((country) => country.trim().toUpperCase())
+    .filter(Boolean);
+  if (countries.length === 0) throw new Error(`${name} debe contener al menos un país.`);
+  return [...new Set(countries)];
 }
 
 function loadConfig(): { api: ApiConfig; campaign: CampaignConfig } {
   const baseUrl = requiredEnv("MESSAGING_API_BASE_URL").replace(/\/+$/, "");
   const firstMessage = requiredEnv("MESSAGE_ONE");
   const secondMessage = requiredEnv("MESSAGE_TWO");
+  const maxRecipientsPerRun = integerEnv("MAX_RECIPIENTS_PER_RUN", 25, 1);
 
   return {
     api: {
@@ -184,12 +151,47 @@ function loadConfig(): { api: ApiConfig; campaign: CampaignConfig } {
     campaign: {
       messages: [firstMessage, secondMessage],
       pauseMs: integerEnv("PAUSE_MS", 2_000, 0),
+      locationPauseMs: integerEnv("LOCATION_PAUSE_MS", 10_000, 0),
+      cyclePauseMs: integerEnv("CYCLE_PAUSE_MS", 3_600_000, 0),
       dryRun: booleanEnv("DRY_RUN", true),
-      maxRecipients: integerEnv("MAX_RECIPIENTS_PER_RUN", 25, 1),
+      maxRecipientsPerLocation: integerEnv(
+        "MAX_RECIPIENTS_PER_LOCATION",
+        maxRecipientsPerRun,
+        1,
+      ),
       stateFile: resolve(process.env.STATE_FILE?.trim() || ".data/notification-state.json"),
       auditFile: resolve(process.env.AUDIT_FILE?.trim() || ".data/notification-audit.jsonl"),
+      terrassaCity: process.env.TERRASSA_CITY?.trim() || "Terrassa",
+      spainCountry: process.env.SPAIN_COUNTRY?.trim().toUpperCase() || "ES",
+      latamCountries: countryListEnv(
+        "LATAM_COUNTRIES",
+        "MX,AR,CO,CL,PE,BR,UY,PY,BO,EC,VE,CR,PA,GT,SV,HN,NI,DO,CU,HT",
+      ),
+      terrassaLatitude: optionalNumberEnv("TERRASSA_LATITUDE"),
+      terrassaLongitude: optionalNumberEnv("TERRASSA_LONGITUDE"),
+      terrassaRadiusKm: optionalNumberEnv("TERRASSA_RADIUS_KM"),
     },
   };
+}
+
+function buildLocationSequence(campaign: CampaignConfig): LocationFilter[] {
+  const terrassa: LocationFilter = {
+    scope: "city",
+    city: campaign.terrassaCity,
+    country: campaign.spainCountry,
+    latitude: campaign.terrassaLatitude,
+    longitude: campaign.terrassaLongitude,
+    radiusKm: campaign.terrassaRadiusKm,
+  };
+  const spain: LocationFilter = {
+    scope: "country",
+    country: campaign.spainCountry,
+  };
+  const latam = campaign.latamCountries.map((country): LocationFilter => ({
+    scope: "country",
+    country,
+  }));
+  return [terrassa, spain, ...latam];
 }
 
 function buildSearchUrl(api: ApiConfig, location: LocationFilter): URL {
@@ -352,18 +354,33 @@ function eligibleUsers(users: User[], state: DeliveryStore): User[] {
   });
 }
 
-async function run(): Promise<void> {
-  const location = parseArguments();
-  if (!location) throw new Error("No se ha indicado una ubicación.");
-  const { api, campaign } = loadConfig();
-  const state = await loadState(campaign.stateFile);
-  const client = new ApiClient(api);
+function locationLabel(location: LocationFilter): string {
+  return location.scope === "city"
+    ? `${location.city ?? "ciudad desconocida"}, ${location.country}`
+    : `país ${location.country}`;
+}
 
-  console.log(`Buscando usuarios activos con consentimiento en ${location.scope}: ${location.city ?? location.country}`);
+function validateArguments(): void {
+  const argumentsList = process.argv.slice(2).filter((argument) => argument !== "--");
+  if (argumentsList.length === 0) return;
+  if (argumentsList.length === 1 && argumentsList[0] === "--help") {
+    printHelp();
+    process.exit(0);
+  }
+  throw new Error("Este proceso continuo no acepta filtros por comando; usa las variables de entorno.");
+}
+
+async function processLocation(
+  client: ApiClient,
+  campaign: CampaignConfig,
+  state: DeliveryStore,
+  location: LocationFilter,
+): Promise<void> {
+  const label = locationLabel(location);
+  console.log(`Buscando usuarios activos con consentimiento en ${label}.`);
   const foundUsers = await client.searchUsers(location);
-  const users = eligibleUsers(foundUsers, state).slice(0, campaign.maxRecipients);
-  console.log(`Encontrados ${foundUsers.length}; elegibles para esta ejecución: ${users.length}.`);
-  console.log(campaign.dryRun ? "DRY_RUN activo: no se harán peticiones de envío." : "Envío real activo.");
+  const users = eligibleUsers(foundUsers, state).slice(0, campaign.maxRecipientsPerLocation);
+  console.log(`Encontrados ${foundUsers.length}; elegibles en ${label}: ${users.length}.`);
 
   for (const user of users) {
     const delivery = (state[user.id] ??= {});
@@ -371,6 +388,7 @@ async function run(): Promise<void> {
     if (!delivery.firstSentAt) {
       await audit(campaign.auditFile, {
         event: campaign.dryRun ? "message_skipped_dry_run" : "message_pending",
+        location: label,
         userId: user.id,
         messageNumber: 1,
         dryRun: campaign.dryRun,
@@ -379,7 +397,12 @@ async function run(): Promise<void> {
         await client.sendMessage(user.id, campaign.messages[0]);
         delivery.firstSentAt = new Date().toISOString();
         await saveState(campaign.stateFile, state);
-        await audit(campaign.auditFile, { event: "message_sent", userId: user.id, messageNumber: 1 });
+        await audit(campaign.auditFile, {
+          event: "message_sent",
+          location: label,
+          userId: user.id,
+          messageNumber: 1,
+        });
       }
       await sleep(campaign.pauseMs);
     }
@@ -387,6 +410,7 @@ async function run(): Promise<void> {
     if (!delivery.secondSentAt) {
       await audit(campaign.auditFile, {
         event: campaign.dryRun ? "message_skipped_dry_run" : "message_pending",
+        location: label,
         userId: user.id,
         messageNumber: 2,
         dryRun: campaign.dryRun,
@@ -395,15 +419,78 @@ async function run(): Promise<void> {
         await client.sendMessage(user.id, campaign.messages[1]);
         delivery.secondSentAt = new Date().toISOString();
         await saveState(campaign.stateFile, state);
-        await audit(campaign.auditFile, { event: "message_sent", userId: user.id, messageNumber: 2 });
+        await audit(campaign.auditFile, {
+          event: "message_sent",
+          location: label,
+          userId: user.id,
+          messageNumber: 2,
+        });
       }
       await sleep(campaign.pauseMs);
     }
   }
 }
 
-run().catch((error: unknown) => {
+async function runCycle(
+  client: ApiClient,
+  campaign: CampaignConfig,
+  state: DeliveryStore,
+  cycleNumber: number,
+): Promise<void> {
+  const locations = buildLocationSequence(campaign);
+  console.log(`Iniciando ciclo ${cycleNumber}: Terrassa -> España -> Latinoamérica.`);
+  await audit(campaign.auditFile, {
+    event: "cycle_started",
+    cycleNumber,
+    locations: locations.map(locationLabel),
+    dryRun: campaign.dryRun,
+  });
+
+  for (let index = 0; index < locations.length; index += 1) {
+    const location = locations[index];
+    try {
+      await processLocation(client, campaign, state, location);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Error en ${locationLabel(location)}: ${message}`);
+      await audit(campaign.auditFile, {
+        event: "location_error",
+        cycleNumber,
+        location: locationLabel(location),
+        error: message,
+      });
+    }
+    if (index < locations.length - 1) await sleep(campaign.locationPauseMs);
+  }
+
+  await audit(campaign.auditFile, { event: "cycle_finished", cycleNumber });
+  console.log(`Ciclo ${cycleNumber} terminado.`);
+}
+
+async function runForever(): Promise<void> {
+  validateArguments();
+  const { api, campaign } = loadConfig();
+  const state = await loadState(campaign.stateFile);
+  const client = new ApiClient(api);
+  let cycleNumber = 1;
+
+  console.log(
+    campaign.dryRun
+      ? "DRY_RUN activo: se buscarán usuarios, pero no se harán envíos."
+      : "Envío real activo solo para usuarios con consentimiento explícito.",
+  );
+  console.log("El proceso continuará hasta recibir Ctrl+C.");
+
+  while (true) {
+    await runCycle(client, campaign, state, cycleNumber);
+    cycleNumber += 1;
+    console.log(`Esperando ${campaign.cyclePauseMs} ms antes del siguiente ciclo.`);
+    await sleep(campaign.cyclePauseMs);
+  }
+}
+
+runForever().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`Error: ${message}`);
+  console.error(`Error de configuración o ejecución: ${message}`);
   process.exitCode = 1;
 });
