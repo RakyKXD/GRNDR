@@ -18,7 +18,10 @@ import { dirname } from "node:path";
 import { resolve } from "node:path";
 
 type SearchScope = "city" | "country";
-type SearchLocationMode = "geohash" | "legacy";
+type SearchLocationMode = "geohash";
+
+const GRINDR_GEOHASH_PRECISION = 12;
+const GEOHASH_ALPHABET = "0123456789bcdefghjkmnpqrstuvwxyz";
 
 interface LocationFilter {
   scope: SearchScope;
@@ -159,7 +162,6 @@ function parseLocationCoordinates(value: string): Record<string, { latitude: num
 
 function geohashEncode(latitude: number, longitude: number, precision = 12): string {
   validateCoordinates(latitude, longitude, "Geohash");
-  const alphabet = "0123456789bcdefghjkmnpqrstuvwxyz";
   let minLatitude = -90;
   let maxLatitude = 90;
   let minLongitude = -180;
@@ -184,7 +186,7 @@ function geohashEncode(latitude: number, longitude: number, precision = 12): str
     evenBit = !evenBit;
     bitCount += 1;
     if (bitCount === 5) {
-      geohash += alphabet[bits];
+      geohash += GEOHASH_ALPHABET[bits];
       bits = 0;
       bitCount = 0;
     }
@@ -192,10 +194,23 @@ function geohashEncode(latitude: number, longitude: number, precision = 12): str
   return geohash;
 }
 
+function grindrGeohash(latitude: number, longitude: number): string {
+  const geohash = geohashEncode(latitude, longitude, GRINDR_GEOHASH_PRECISION);
+  if (
+    geohash.length !== GRINDR_GEOHASH_PRECISION ||
+    !new RegExp(`^[${GEOHASH_ALPHABET}]{${GRINDR_GEOHASH_PRECISION}}$`).test(geohash)
+  ) {
+    throw new Error("No se pudo generar un geohash válido de 12 caracteres para Grindr.");
+  }
+  return geohash;
+}
+
 function locationModeEnv(): SearchLocationMode {
   const value = process.env.SEARCH_LOCATION_MODE?.trim().toLowerCase() || "geohash";
-  if (value !== "geohash" && value !== "legacy") {
-    throw new Error("SEARCH_LOCATION_MODE debe ser geohash o legacy.");
+  if (value !== "geohash") {
+    throw new Error(
+      "SEARCH_LOCATION_MODE debe ser geohash. Grindr Discover no acepta city/country ni el modo legacy.",
+    );
   }
   return value;
 }
@@ -217,7 +232,8 @@ Opciones:
    --scope=country          Buscar solo las ubicaciones de país configuradas.
 
 Ubicación:
-  SEARCH_LOCATION_MODE=geohash usa el formato de Grindr: geohash de 12 caracteres.
+  SEARCH_LOCATION_MODE=geohash genera GET /v4/discover?geohash=<12 caracteres>.
+  La petición no incluye city, country, latitude ni longitude.
   Para Terrassa configura TERRASSA_LATITUDE y TERRASSA_LONGITUDE, o GEOCODING_URL.
   Para ubicaciones de país usa LOCATION_COORDINATES=ES:41.39,2.17;MX:19.43,-99.13.
 `);
@@ -368,23 +384,12 @@ async function resolveLocations(
 
 function buildSearchUrl(api: ApiConfig, location: LocationFilter): URL {
   const url = new URL(api.searchPath, `${api.baseUrl}/`);
-  if (api.locationMode === "geohash") {
-    if (location.latitude === undefined || location.longitude === undefined) {
-      throw new Error(
-        `Faltan coordenadas para ${locationLabel(location)}. Configura LOCATION_COORDINATES o usa --scope=city con TERRASSA_LATITUDE/TERRASSA_LONGITUDE.`,
-      );
-    }
-    url.searchParams.set("geohash", geohashEncode(location.latitude, location.longitude));
-    return url;
+  if (location.latitude === undefined || location.longitude === undefined) {
+    throw new Error(
+      `Faltan coordenadas para ${locationLabel(location)}. Configura LOCATION_COORDINATES o usa --scope=city con TERRASSA_LATITUDE/TERRASSA_LONGITUDE.`,
+    );
   }
-
-  url.searchParams.set("status", "active");
-  url.searchParams.set("scope", location.scope);
-  url.searchParams.set("country", location.country);
-  if (location.scope === "city" && location.city) url.searchParams.set("city", location.city);
-  if (location.latitude !== undefined) url.searchParams.set("latitude", String(location.latitude));
-  if (location.longitude !== undefined) url.searchParams.set("longitude", String(location.longitude));
-  if (location.radiusKm !== undefined) url.searchParams.set("radius_km", String(location.radiusKm));
+  url.searchParams.set("geohash", grindrGeohash(location.latitude, location.longitude));
   return url;
 }
 

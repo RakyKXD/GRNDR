@@ -1,1 +1,2 @@
 - [Imported workspace dependencies](imported-workspace-dependencies.md) — restore the locked pnpm dependency tree before starting artifact workflows after an import.
+- [Discover geolocation contract](discover-geolocation-contract.md) — public Grindr Discover documentation uses `geohash` (12 chars); `geo_hash_decode` is an error identifier, not a query key.
