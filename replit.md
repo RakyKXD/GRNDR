@@ -16,7 +16,7 @@ Script de notificaciones con consentimiento explícito para una API compatible q
 - Required env for the API server: `DATABASE_URL` — Postgres connection string
 - Required env for the broadcaster: `MESSAGING_API_BASE_URL`, `MESSAGING_API_TOKEN`, `MESSAGE_ONE`, `MESSAGE_TWO`
 - El broadcaster usa `DRY_RUN=true` por defecto; no activar envíos reales hasta validar la API controlada.
-- Consulta `scripts/.env.example` para todas las variables de geolocalización, límites, pausas y archivos de auditoría.
+- Consulta `scripts/.env.example` para las variables de límites, pausas y archivos de auditoría. La ubicación está definida en el código.
 
 ## Stack
 
@@ -38,10 +38,8 @@ Script de notificaciones con consentimiento explícito para una API compatible q
 
 ## Architecture decisions
 
-- En `SEARCH_LOCATION_MODE=geohash`, las búsquedas usan exactamente `GET /v4/discover?geohash=<12 caracteres>` y no envían `city`, `country`, `latitude` ni `longitude`.
-- `SEARCH_LOCATION_MODE=legacy` no está soportado: Grindr Discover rechaza búsquedas basadas en nombres de ciudad o códigos de país.
-- Terrassa puede usar `TERRASSA_LATITUDE` y `TERRASSA_LONGITUDE` directamente, o resolverse mediante `GEOCODING_URL`.
-- Las ubicaciones de país usan automáticamente un punto central aproximado; `LOCATION_COORDINATES` solo es necesario para sobrescribir un punto o añadir un país fuera de la lista predeterminada.
+- Las búsquedas usan exactamente `GET /v4/discover?geohash=<12 caracteres>` y no envían `city`, `country`, `latitude` ni `longitude`.
+- Terrassa usa las coordenadas fijas `41.563, 2.008`; España y los países LATAM usan centroides fijos definidos en el broadcaster.
 - Solo se procesan usuarios con consentimiento explícito y `DRY_RUN` evita envíos mientras se valida el flujo.
 
 ## Product
@@ -56,7 +54,7 @@ El proyecto proporciona un broadcaster de campañas con dos mensajes secuenciale
 
 - El proceso del broadcaster es continuo y solo termina con Ctrl+C.
 - `MESSAGING_API_BASE_URL` y `MESSAGING_API_TOKEN` deben apuntar a una API compatible que controles; no se deben inventar credenciales de terceros.
-- En geohash, `TERRASSA_LATITUDE` y `TERRASSA_LONGITUDE` deben configurarse juntas. Las coordenadas de países se declaran como `PAIS:LATITUD,LONGITUD;...`.
+- La secuencia geográfica no depende de variables externas: Terrassa -> España -> países LATAM.
 - Los workflows de API y mockup pertenecen a sus artifacts; se reinician con sus nombres administrados, no creando workflows duplicados.
 
 ## Pointers
