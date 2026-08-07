@@ -34,7 +34,7 @@ _Describe the high-level user-facing capabilities of this app once they exist._
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Keep campaign messages in Replit environment variables (`MESSAGE_ONE` and `MESSAGE_TWO`), not command-line arguments or source files.
 
 ## Gotchas
 

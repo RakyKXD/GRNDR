@@ -65,11 +65,6 @@ interface SearchResponse {
   nextPage?: string;
 }
 
-const DEFAULT_MESSAGES: [string, string] = [
-  "MENSAJE_1_CONFIGURABLE",
-  "MENSAJE_2_CONFIGURABLE",
-];
-
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) {
@@ -105,13 +100,7 @@ function optionalNumberEnv(name: string): number | undefined {
   return value;
 }
 
-interface ParsedArguments {
-  location: LocationFilter;
-  messageOne?: string;
-  messageTwo?: string;
-}
-
-function parseArguments(): ParsedArguments | undefined {
+function parseArguments(): LocationFilter | undefined {
   const args = new Map<string, string>();
   for (const argument of process.argv.slice(2)) {
     if (argument === "--") continue;
@@ -142,16 +131,12 @@ function parseArguments(): ParsedArguments | undefined {
   const radiusKm = parseOptionalArgumentNumber(args, "radius-km");
 
   return {
-    location: {
-      scope,
-      country,
-      city,
-      latitude,
-      longitude,
-      radiusKm,
-    },
-    messageOne: args.get("message-one"),
-    messageTwo: args.get("message-two"),
+    scope,
+    country,
+    city,
+    latitude,
+    longitude,
+    radiusKm,
   };
 }
 
@@ -171,8 +156,6 @@ function printHelp(): void {
 Uso:
   pnpm --filter @workspace/scripts run notify -- --scope=city --city=Terrassa --country=ES
   pnpm --filter @workspace/scripts run notify -- --scope=country --country=ES
-  pnpm --filter @workspace/scripts run notify -- --scope=city --city=Terrassa --country=ES \\
-    --message-one="Primer mensaje" --message-two="Segundo mensaje"
 
 Argumentos:
   --scope=city|country     Alcance de búsqueda (por defecto: SEARCH_SCOPE).
@@ -181,19 +164,14 @@ Argumentos:
   --latitude=...            Coordenada opcional.
   --longitude=...           Coordenada opcional.
   --radius-km=...           Radio opcional.
-  --message-one="..."       Primer mensaje; sobrescribe MESSAGE_ONE.
-  --message-two="..."       Segundo mensaje; sobrescribe MESSAGE_TWO.
   --help                   Mostrar esta ayuda.
 `);
 }
 
-function loadConfig(messages?: { messageOne?: string; messageTwo?: string }): {
-  api: ApiConfig;
-  campaign: CampaignConfig;
-} {
+function loadConfig(): { api: ApiConfig; campaign: CampaignConfig } {
   const baseUrl = requiredEnv("MESSAGING_API_BASE_URL").replace(/\/+$/, "");
-  const firstMessage = messages?.messageOne?.trim() || process.env.MESSAGE_ONE?.trim() || DEFAULT_MESSAGES[0];
-  const secondMessage = messages?.messageTwo?.trim() || process.env.MESSAGE_TWO?.trim() || DEFAULT_MESSAGES[1];
+  const firstMessage = requiredEnv("MESSAGE_ONE");
+  const secondMessage = requiredEnv("MESSAGE_TWO");
 
   return {
     api: {
@@ -375,10 +353,9 @@ function eligibleUsers(users: User[], state: DeliveryStore): User[] {
 }
 
 async function run(): Promise<void> {
-  const parsedArguments = parseArguments();
-  if (!parsedArguments) throw new Error("No se ha indicado una ubicación.");
-  const { api, campaign } = loadConfig(parsedArguments);
-  const { location } = parsedArguments;
+  const location = parseArguments();
+  if (!location) throw new Error("No se ha indicado una ubicación.");
+  const { api, campaign } = loadConfig();
   const state = await loadState(campaign.stateFile);
   const client = new ApiClient(api);
 
