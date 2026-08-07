@@ -23,6 +23,37 @@ type SearchLocationMode = "geohash";
 const GRINDR_GEOHASH_PRECISION = 12;
 const GEOHASH_ALPHABET = "0123456789bcdefghjkmnpqrstuvwxyz";
 
+/**
+ * Approximate geographic centers used for country-scope searches.
+ *
+ * Discover accepts a geohash rather than a country name. These points avoid
+ * requiring a manually configured coordinate for every country while keeping
+ * LOCATION_COORDINATES available as an optional, more precise override.
+ */
+const DEFAULT_COUNTRY_CENTROIDS: Record<string, { latitude: number; longitude: number }> = {
+  ES: { latitude: 40.4637, longitude: -3.7492 },
+  MX: { latitude: 23.6345, longitude: -102.5528 },
+  AR: { latitude: -38.4161, longitude: -63.6167 },
+  CO: { latitude: 4.5709, longitude: -74.2973 },
+  CL: { latitude: -35.6751, longitude: -71.543 },
+  PE: { latitude: -9.19, longitude: -75.0152 },
+  BR: { latitude: -14.235, longitude: -51.9253 },
+  UY: { latitude: -32.5228, longitude: -55.7658 },
+  PY: { latitude: -23.4425, longitude: -58.4438 },
+  BO: { latitude: -16.2902, longitude: -63.5887 },
+  EC: { latitude: -1.8312, longitude: -78.1834 },
+  VE: { latitude: 6.4238, longitude: -66.5897 },
+  CR: { latitude: 9.7489, longitude: -83.7534 },
+  PA: { latitude: 8.538, longitude: -80.7821 },
+  GT: { latitude: 15.7835, longitude: -90.2308 },
+  SV: { latitude: 13.7942, longitude: -88.8965 },
+  HN: { latitude: 15.2, longitude: -86.2419 },
+  NI: { latitude: 12.8654, longitude: -85.2072 },
+  DO: { latitude: 18.7357, longitude: -70.1627 },
+  CU: { latitude: 21.5218, longitude: -77.7812 },
+  HT: { latitude: 18.9712, longitude: -72.2852 },
+};
+
 interface LocationFilter {
   scope: SearchScope;
   city?: string;
@@ -112,7 +143,7 @@ function booleanEnv(name: string, fallback: boolean): boolean {
 function optionalNumberEnv(name: string): number | undefined {
   const rawValue = process.env[name]?.trim();
   if (!rawValue) return undefined;
-  const value = Number(rawValue);
+  const value = Number.parseFloat(rawValue);
   if (!Number.isFinite(value)) throw new Error(`${name} debe ser numérico.`);
   return value;
 }
@@ -125,6 +156,9 @@ function coordinateEnvPair(
   const longitude = optionalNumberEnv(longitudeName);
   if ((latitude === undefined) !== (longitude === undefined)) {
     throw new Error(`${latitudeName} y ${longitudeName} deben configurarse juntos.`);
+  }
+  if (latitude !== undefined && longitude !== undefined) {
+    validateCoordinates(latitude, longitude, `${latitudeName}/${longitudeName}`);
   }
   return { latitude, longitude };
 }
@@ -149,8 +183,8 @@ function parseLocationCoordinates(value: string): Record<string, { latitude: num
     }
     const country = item.slice(0, separator).trim().toUpperCase();
     const [latitudeText, longitudeText] = item.slice(separator + 1).split(",").map((part) => part.trim());
-    const latitude = Number(latitudeText);
-    const longitude = Number(longitudeText);
+    const latitude = Number.parseFloat(latitudeText);
+    const longitude = Number.parseFloat(longitudeText);
     if (!country || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
       throw new Error(`Coordenadas inválidas en LOCATION_COORDINATES: ${item}`);
     }
@@ -222,8 +256,8 @@ Uso:
 
 El proceso ejecuta continuamente esta secuencia:
   1. Terrassa, España.
-  2. Resto de España mediante la búsqueda por country=ES.
-  3. Cada país de LATAM_COUNTRIES, en orden.
+  2. Resto de España mediante un punto central aproximado.
+  3. Cada país de LATAM_COUNTRIES mediante su punto central aproximado.
   4. Espera CYCLE_PAUSE_MS y vuelve al paso 1.
 
 Opciones:
@@ -235,7 +269,8 @@ Ubicación:
   SEARCH_LOCATION_MODE=geohash genera GET /v4/discover?geohash=<12 caracteres>.
   La petición no incluye city, country, latitude ni longitude.
   Para Terrassa configura TERRASSA_LATITUDE y TERRASSA_LONGITUDE, o GEOCODING_URL.
-  Para ubicaciones de país usa LOCATION_COORDINATES=ES:41.39,2.17;MX:19.43,-99.13.
+  Las ubicaciones de país usan puntos centrales aproximados automáticamente.
+  LOCATION_COORDINATES=ES:41.39,2.17;MX:19.43,-99.13 puede sobrescribirlos.
 `);
 }
 
@@ -254,9 +289,18 @@ function loadConfig(): { api: ApiConfig; campaign: CampaignConfig } {
   const secondMessage = requiredEnv("MESSAGE_TWO");
   const maxRecipientsPerRun = integerEnv("MAX_RECIPIENTS_PER_RUN", 25, 1);
   const terrassaCoordinates = coordinateEnvPair("TERRASSA_LATITUDE", "TERRASSA_LONGITUDE");
-  const locationCoordinates = process.env.LOCATION_COORDINATES?.trim()
+  const spainCountry = process.env.SPAIN_COUNTRY?.trim().toUpperCase() || "ES";
+  const latamCountries = countryListEnv(
+    "LATAM_COUNTRIES",
+    "MX,AR,CO,CL,PE,BR,UY,PY,BO,EC,VE,CR,PA,GT,SV,HN,NI,DO,CU,HT",
+  );
+  const configuredLocationCoordinates = process.env.LOCATION_COORDINATES?.trim()
     ? parseLocationCoordinates(process.env.LOCATION_COORDINATES)
     : {};
+  const locationCoordinates = {
+    ...DEFAULT_COUNTRY_CENTROIDS,
+    ...configuredLocationCoordinates,
+  };
 
   return {
     api: {
@@ -283,11 +327,8 @@ function loadConfig(): { api: ApiConfig; campaign: CampaignConfig } {
       stateFile: resolve(process.env.STATE_FILE?.trim() || ".data/notification-state.json"),
       auditFile: resolve(process.env.AUDIT_FILE?.trim() || ".data/notification-audit.jsonl"),
       terrassaCity: process.env.TERRASSA_CITY?.trim() || "Terrassa",
-      spainCountry: process.env.SPAIN_COUNTRY?.trim().toUpperCase() || "ES",
-      latamCountries: countryListEnv(
-        "LATAM_COUNTRIES",
-        "MX,AR,CO,CL,PE,BR,UY,PY,BO,EC,VE,CR,PA,GT,SV,HN,NI,DO,CU,HT",
-      ),
+      spainCountry,
+      latamCountries,
       terrassaLatitude: terrassaCoordinates.latitude,
       terrassaLongitude: terrassaCoordinates.longitude,
       terrassaRadiusKm: optionalNumberEnv("TERRASSA_RADIUS_KM"),
@@ -352,8 +393,8 @@ async function geocodeCity(
   }
 
   const values = candidate as Record<string, unknown>;
-  const latitude = Number(values.lat ?? values.latitude);
-  const longitude = Number(values.lon ?? values.lng ?? values.longitude);
+  const latitude = Number.parseFloat(String(values.lat ?? values.latitude ?? ""));
+  const longitude = Number.parseFloat(String(values.lon ?? values.lng ?? values.longitude ?? ""));
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
     throw new Error(`La geocodificación no devolvió coordenadas válidas para ${locationLabel(location)}.`);
   }
@@ -386,7 +427,7 @@ function buildSearchUrl(api: ApiConfig, location: LocationFilter): URL {
   const url = new URL(api.searchPath, `${api.baseUrl}/`);
   if (location.latitude === undefined || location.longitude === undefined) {
     throw new Error(
-      `Faltan coordenadas para ${locationLabel(location)}. Configura LOCATION_COORDINATES o usa --scope=city con TERRASSA_LATITUDE/TERRASSA_LONGITUDE.`,
+      `No hay coordenadas disponibles para ${locationLabel(location)}. Añade el país al mapa de centroides o usa LOCATION_COORDINATES.`,
     );
   }
   url.searchParams.set("geohash", grindrGeohash(location.latitude, location.longitude));

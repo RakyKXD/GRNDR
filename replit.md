@@ -41,7 +41,7 @@ Script de notificaciones con consentimiento explícito para una API compatible q
 - En `SEARCH_LOCATION_MODE=geohash`, las búsquedas usan exactamente `GET /v4/discover?geohash=<12 caracteres>` y no envían `city`, `country`, `latitude` ni `longitude`.
 - `SEARCH_LOCATION_MODE=legacy` no está soportado: Grindr Discover rechaza búsquedas basadas en nombres de ciudad o códigos de país.
 - Terrassa puede usar `TERRASSA_LATITUDE` y `TERRASSA_LONGITUDE` directamente, o resolverse mediante `GEOCODING_URL`.
-- Las ubicaciones de país requieren una entrada en `LOCATION_COORDINATES` cuando se usa el modo geohash; si falta, se registra el error y el ciclo continúa.
+- Las ubicaciones de país usan automáticamente un punto central aproximado; `LOCATION_COORDINATES` solo es necesario para sobrescribir un punto o añadir un país fuera de la lista predeterminada.
 - Solo se procesan usuarios con consentimiento explícito y `DRY_RUN` evita envíos mientras se valida el flujo.
 
 ## Product
